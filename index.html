@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+
+  <head>
+    <meta charset="UTF-8">
+    <title>Untitled</title>
+    
+
+  </head>
+    
+  <body>
+  <!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>超級范寬兄弟：谿山行旅篇</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #333;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-family: "KaiTi", "BiauKai", serif; /* 楷體更具水墨感 */
+        }
+        #gameCanvas {
+            border: 8px double #5d4037;
+            background-color: #f0e6d2; /* 仿古宣紙色 */
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        }
+        #ui {
+            position: absolute;
+            top: 20px;
+            color: #3e2723;
+            font-size: 20px;
+            text-align: center;
+            pointer-events: none;
+        }
+        .instruction {
+            font-size: 14px;
+            color: #666;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+
+<div id="ui">
+    <div>谿山行旅：范寬的試煉</div>
+    <div id="scoreBoard">遊歷分數: 0 | 尋獲真跡: 否</div>
+    <div class="instruction">操作：左右鍵移動，空白鍵跳躍 | 目標：尋找樹蔭下的簽名並抵達終點</div>
+</div>
+<canvas id="gameCanvas" width="800" height="450"></canvas>
+
+<script>
+// --- 遊戲設定 ---
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// 遊戲狀態
+let gameRunning = true;
+let score = 0;
+let secretFound = false; // 是否找到范寬簽名
+let frame = 0;
+
+// 物理參數
+const GRAVITY = 0.6;
+const FRICTION = 0.8;
+const JUMP_FORCE = -12;
+const SPEED = 5;
+
+// 主角：范寬 (Fan Kuan)
+const player = {
+    x: 50,
+    y: 300,
+    width: 30,
+    height: 40,
+    velX: 0,
+    velY: 0,
+    grounded: false,
+    color: '#2c3e50', // 墨色衣著
+    facingRight: true
+};
+
+// 地圖物件 (根據文件內容設計)
+// 包含：地面、巨石、樹木(隱藏點)、終點
+const platforms = [
+    // 地面
+    { x: 0, y: 400, w: 2000, h: 50, type: 'ground' },
+    // 近景巨石 (平台)
+    { x: 200, y: 320, w: 80, h: 30, type: 'rock' },
+    { x: 350, y: 250, w: 100, h: 30, type: 'rock' },
+    // 中景山徑
+    { x: 550, y: 300, w: 150, h: 20, type: 'ground' },
+    // 右角樹蔭 (藏簽名處)
+    { x: 850, y: 220, w: 100, h: 20, type: 'leaves', hasSecret: true },
+    // 通往主山的跳台
+    { x: 1050, y: 300, w: 80, h: 30, type: 'rock' },
+    { x: 1200, y: 200, w: 200, h: 30, type: 'rock' } // 終點平台
+];
+
+// 驢隊 (收集品) - 文件中提到的「驢隊」
+const donkeys = [
+    { x: 600, y: 270, w: 20, h: 20, collected: false },
+    { x: 1100, y: 270, w: 20, h: 20, collected: false }
+];
+
+// 攝影機
+let cameraX = 0;
+
+// 鍵盤輸入
+const keys = {
+    right: false,
+    left: false,
+    up: false
+};
+
+document.addEventListener('keydown', (e) => {
+    if (e.code === 'ArrowRight') keys.right = true;
+    if (e.code === 'ArrowLeft') keys.left = true;
+    if (e.code === 'Space' || e.code === 'ArrowUp') keys.up = true;
+});
+
+document.addEventListener('keyup', (e) => {
+    if (e.code === 'ArrowRight') keys.right = false;
+    if (e.code === 'ArrowLeft') keys.left = false;
+    if (e.code === 'Space' || e.code === 'ArrowUp') keys.up = false;
+});
+
+// --- 繪圖函數 ---
+
+// 繪製背景 (主山、瀑布、雨點皴)
+function drawBackground() {
+    // 天空/紙色
+    ctx.fillStyle = '#f0e6d2';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // 遠景：巍峨主山 (固定在背景，視差滾動較慢)
+    ctx.save();
+    ctx.translate(-cameraX * 0.2, 0); // 視差效果
+    
+    // 主山輪廓
+    ctx.beginPath();
+    ctx.moveTo(300, 450);
+    ctx.lineTo(400, 50); // 山頂
+    ctx.lineTo(500, 450);
+    ctx.fillStyle = 'rgba(60, 60, 60, 0.3)'; // 淡墨
+    ctx.fill();
+    
+    // 飛瀑 (留白)
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(415, 50, 10, 400);
+
+    // 雨點皴 (隨機畫點表現質感)
+    ctx.fillStyle = 'rgba(0,0,0,0.1)';
+    for(let i=0; i<100; i++) {
+        let rx = 300 + Math.random() * 200;
+        let ry = 50 + Math.random() * 400;
+        ctx.fillRect(rx, ry, 2, 2);
+    }
+    ctx.restore();
+}
+
+function update() {
+    if (!gameRunning) return;
+
+    // 玩家移動
+    if (keys.right) {
+        player.velX < SPEED ? player.velX++ : player.velX = SPEED;
+        player.facingRight = true;
+    }
+    if (keys.left) {
+        player.velX > -SPEED ? player.velX-- : player.velX = -SPEED;
+        player.facingRight = false;
+    }
+
+    player.velX *= FRICTION;
+    player.velY += GRAVITY;
+
+    player.grounded = false;
+
+    // 碰撞偵測 (與平台)
+    platforms.forEach(plat => {
+        // 簡單的AABB碰撞
+        if (player.x < plat.x + plat.w &&
+            player.x + player.width > plat.x &&
+            player.y < plat.y + plat.h &&
+            player.y + player.height > plat.y) {
+            
+            // 從上方落下
+            if (player.velY > 0 && player.y + player.height - player.velY <= plat.y) {
+                player.grounded = true;
+                player.velY = 0;
+                player.y = plat.y - player.height;
+            } 
+            // 撞頭 (用於觸發隱藏磚塊)
+            else if (player.velY < 0 && player.y - player.velY >= plat.y + plat.h) {
+                player.velY = 0;
+                player.y = plat.y + plat.h;
+                if (plat.hasSecret && !secretFound) {
+                    secretFound = true;
+                    score += 1000;
+                    alert("發現隱藏款識：「范寬」！ (得分 +1000)");
+                    document.getElementById('scoreBoard').innerText = `遊歷分數: ${score} | 尋獲真跡: 是 (范寬)`;
+                }
+            }
+        }
+    });
+
+    if (player.grounded && keys.up) {
+        player.velY = JUMP_FORCE;
+        player.grounded = false;
+    }
+
+    player.x += player.velX;
+    player.y += player.velY;
+
+    // 收集驢隊
+    donkeys.forEach(donkey => {
+        if (!donkey.collected && 
+            player.x < donkey.x + donkey.w &&
+            player.x + player.width > donkey.x &&
+            player.y < donkey.y + donkey.h &&
+            player.y + player.height > donkey.y) {
+            
+            donkey.collected = true;
+            score += 100;
+            document.getElementById('scoreBoard').innerText = `遊歷分數: ${score} | 尋獲真跡: ${secretFound ? "是 (范寬)" : "否"}`;
+        }
+    });
+
+    // 邊界檢查
+    if (player.x < 0) player.x = 0;
+    if (player.y > canvas.height) {
+        // 掉落深淵，重置
+        player.x = 50;
+        player.y = 300;
+        score = Math.max(0, score - 50);
+        document.getElementById('scoreBoard').innerText = `遊歷分數: ${score} | 尋獲真跡: ${secretFound ? "是 (范寬)" : "否"}`;
+    }
+
+    // 攝影機跟隨
+    if (player.x > 300) {
+        cameraX = player.x - 300;
+    }
+    
+    // 勝利判定
+    if (player.x > 1300) {
+        gameRunning = false;
+        setTimeout(() => {
+            alert(`恭喜！你完成了谿山行旅圖的遊歷。\n最終得分：${score}\n${secretFound ? "太棒了！你發現了藏在樹蔭下的范寬簽名！" : "可惜，你沒有發現畫作中隱藏的秘密(簽名)。"}`);
+            location.reload();
+        }, 100);
+    }
+}
+
+function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    drawBackground();
+
+    ctx.save();
+    ctx.translate(-cameraX, 0);
+
+    // 繪製平台
+    platforms.forEach(plat => {
+        if (plat.type === 'ground') ctx.fillStyle = '#3e2723'; // 土色
+        else if (plat.type === 'rock') ctx.fillStyle = '#5d4037'; // 岩石
+        else if (plat.type === 'leaves') ctx.fillStyle = '#2e7d32'; // 樹葉
+        
+        ctx.fillRect(plat.x, plat.y, plat.w, plat.h);
+        
+        // 畫點質感 (皴法)
+        ctx.strokeStyle = '#000';
+        ctx.strokeRect(plat.x, plat.y, plat.w, plat.h);
+    });
+
+    // 繪製驢隊 (收集品)
+    donkeys.forEach(donkey => {
+        if (!donkey.collected) {
+            ctx.font = '20px Arial';
+            ctx.fillText('🫏', donkey.x, donkey.y + 20);
+        }
+    });
+
+    // 繪製主角 (范寬)
+    ctx.fillStyle = player.color;
+    ctx.fillRect(player.x, player.y, player.width, player.height);
+    
+    // 簡單的臉部/特徵
+    ctx.fillStyle = '#ffe0b2'; // 膚色
+    ctx.fillRect(player.x + 5, player.y + 5, 20, 15);
+    ctx.fillStyle = '#000'; // 鬍鬚 (范寬儀態疎野)
+    ctx.fillRect(player.x + 5, player.y + 15, 20, 5);
+
+    // 隱藏簽名顯示 (如果被撞擊過)
+    if (secretFound) {
+        ctx.fillStyle = '#000';
+        ctx.font = '16px KaiTi';
+        ctx.fillText('范寬', 880, 200); // 顯示在樹葉上方
+    }
+
+    // 終點提示
+    ctx.font = '30px Arial';
+    ctx.fillText('🏔️', 1300, 190);
+
+    ctx.restore();
+
+    requestAnimationFrame(() => {
+        update();
+        draw();
+    });
+}
+
+// 啟動遊戲
+draw();
+
+</script>
+</body>
+</html>
+    
+  </body>
+  
+</html>
